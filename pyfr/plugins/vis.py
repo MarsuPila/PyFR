@@ -11,6 +11,7 @@ from pyfr.plugins.base import BasePlugin
 from pyfr.shapes import BaseShape
 from pyfr.util import proxylist, subclass_where
 
+from pyfr.plugins.toDiskandVTU import vtuComp
 
 def _cfg_wrapper(meth, type):
     @CFUNCTYPE(c_int, c_char_p, c_char_p, POINTER(type))
@@ -133,8 +134,12 @@ class VisPlugin(BasePlugin):
 
         # Finally, initialise the vis library
         self._vptr = self._lib.vis_init(
-            wcfgsect, wcfg, self.nvars, len(minfo_arr), minfo_arr, sinfo_arr
-        )
+            wcfgsect, wcfg, self.nvars, len(minfo_arr), minfo_arr, sinfo_arr)
+            
+        # store copy of mesh
+        self.vtuOut = vtuComp()
+        self.vtuOut.storeMesh(len(minfo_arr), minfo_arr, sinfo_arr, self.cfg)
+        
 
     def _prepare_vtu(self, etype, part):
         from pyfr.writers.vtk import BaseShapeSubDiv
@@ -246,3 +251,6 @@ class VisPlugin(BasePlugin):
 
         # Call out to the library method
         self._lib.vis_run(self._vptr, intg.tcurr, intg.nacptsteps)
+        
+        #from pyfr.plugins.toDiskandVTU import vtuComp
+        self.vtuOut.storeVTU(intg.tcurr, intg.nacptsteps)
