@@ -4,6 +4,7 @@
 from ctypes import (POINTER, Structure, cast, c_float, c_int, c_int32, c_uint8, c_void_p)
 import numpy as np
 import pycuda.driver as cuda
+import vtk
 
 #from pyfr.ctypesutil import load_librself.solHost
 #from pyfr.plugins.base import BasePlugin
@@ -44,6 +45,7 @@ class vtuComp():
     self.soln         = None
     self.solHost      = None
     self.dtype        = None
+    self.gamred       = None
     return
   
   def storeMesh(self, nEleTypes, minfo, sinfo, cfg):
@@ -55,7 +57,7 @@ class vtuComp():
     self.neles        = minfo[0].neles
     self.nnodesperele = minfo[0].nnodesperele
     self.ncells       = minfo[0].ncells
-    self.vertices     = np.fromiter(cast(minfo[0].vertices, POINTER(c_float)), dtype=np.float32, count=minfo[0].neles*minfo[0].nnodesperele)
+    self.vertices     = np.fromiter(cast(minfo[0].vertices, POINTER(c_float)), dtype=np.float32, count=minfo[0].neles*minfo[0].nnodesperele*3)
     self.con          = np.fromiter(cast(minfo[0].con,      POINTER(c_int32)), dtype=np.int32,   count=minfo[0].ncells*8)
     self.off          = np.fromiter(cast(minfo[0].off,      POINTER(c_int32)), dtype=np.int32,   count=minfo[0].ncells)
     self.type         = np.fromiter(cast(minfo[0].type,     POINTER(c_uint8)), dtype=np.uint8,   count=minfo[0].ncells)
@@ -72,6 +74,7 @@ class vtuComp():
       self.dtype      = np.float64
     self.solHost      = np.empty((self.nnodesperele, self.ldim), dtype=self.dtype)
     
+    self.gamred = cfg.getfloat('constants', 'gamma') - 1.
     return
     
   
@@ -88,13 +91,139 @@ class vtuComp():
     # unpack AoSoA to SoA
     nparr        = self.neles - self.neles % -self.k
     self.solHost = self.solHost.reshape([self.nnodesperele, nparr // self.k, 5, self.k])
+    self.solHost = self.solHost.swapaxes(-2, -3)
+    self.solHost = self.solHost.reshape([self.nnodesperele, 5, -1])
+    self.solHost = self.solHost[..., :self.neles]
+    
+    # separate vars
+    self.solHost = self.solHost.swapaxes(-2, -3)
+    self.solHost = self.solHost.reshape([5, self.neles*self.nnodesperele])
+    
+    # convert conservative to primitive
+    # velocities
+    self.solHost[1] = np.divide(self.solHost[1], self.solHost[0])
+    self.solHost[2] = np.divide(self.solHost[2], self.solHost[0])
+    self.solHost[3] = np.divide(self.solHost[3], self.solHost[0])
+    
+    # pressure (p = (gamma-1)*(e-.5*rho*v**2))
+    ekin = np.add(np.multiply(self.solHost[1], self.solHost[1]), np.multiply(self.solHost[2], self.solHost[2]))
+    ekin = np.add(np.multiply(self.solHost[3], self.solHost[3]), ekin)
+    ekin = np.multiply(self.solHost[0], .5*ekin)
+    self.solHost[4] = self.gamred*np.subtract(self.solHost[4], ekin)
+    
+    #for ivert in range(0, self.neles*self.nnodesperele):
+      #xx = self.vertices[3*ivert]
+      #yy = self.vertices[3*ivert+1]
+      #zz = self.vertices[3*ivert+2]
+      #rhotest = (6.28318530717958647693+xx) + 3.*(6.28318530717958647693+yy) + 5*(6.28318530717958647693+zz)
+      #if (not np.isclose(self.solHost[0][ivert], rhotest, 1.E-5, 1.E-5)):
+        #print("Noooo! " + repr(ivert) + "   rho: "+ repr(self.solHost[0][ivert]) + "  rhotest: " + repr(rhotest))
+    
+    # prepare data for vtk
+    
+    pts = vtk.vtkPoints()
+    pts.SetNumberOfPoints(self.neles*self.nnodesperele)
+    rho = vtk.vtkFloatArray()
+    rho.SetName("Density")
+    rho.SetNumberOfComponents(1)
+    rho.SetNumberOfTuples(self.neles*self.nnodesperele)
+    vel = vtk.vtkFloatArray()
+    vel.SetName("Velocity")
+    vel.SetNumberOfComponents(3)
+    vel.SetNumberOfTuples(self.neles*self.nnodesperele)
+    prs = vtk.vtkFloatArray()
+    prs.SetName("Pressure")
+    prs.SetNumberOfComponents(1)
+    prs.SetNumberOfTuples(self.neles*self.nnodesperele)
+    for ivert in range(self.neles*self.nnodesperele):
+      pts.InsertPoint(ivert,                    self.vertices[3*ivert], 
+                      self.vertices[3*ivert+1], self.vertices[3*ivert+2])
+      rho.SetTuple1(ivert, self.solHost[0, ivert])
+      vel.SetTuple3(ivert, self.solHost[1, ivert], self.solHost[2, ivert], self.solHost[3, ivert])
+      prs.SetTuple1(ivert, self.solHost[4, ivert])
+  
+    
+    # build cells
+    aHexahedron     = vtk.vtkHexahedron()
+    aHexahedronGrid = vtk.vtkUnstructuredGrid()
+    aHexahedronGrid.Allocate(1, 1)
+    for icell in range(self.ncells):
+      for ivert in range(8):
+        aHexahedron.GetPointIds().SetId(ivert, self.con[8*icell+ivert])
+      aHexahedronGrid.InsertNextCell(aHexahedron.GetCellType(), aHexahedron.GetPointIds())
+    
+    # setpoints'n'pointdata
+    aHexahedronGrid.SetPoints(pts)
+    aHexahedronGrid.GetPointData().AddArray(rho)
+    aHexahedronGrid.GetPointData().AddArray(vel)
+    aHexahedronGrid.GetPointData().AddArray(prs)
+    
+    # write out file
+    fn = 'aaaaaaaaa.vtu'
+    #writer = vtk.vtkUnstructuredGridWriter()
+    writer = vtk.vtkXMLUnstructuredGridWriter()
+    writer.SetFileName(fn)
+    writer.SetInputData(aHexahedronGrid)
+    writer.Write()
+    
+    
+    #aHexahedron = vtk.vtkHexahedron()
+    #aHexahedron.GetPointIds().SetId(0, 0)
+    #aHexahedron.GetPointIds().SetId(1, 1)
+    #aHexahedron.GetPointIds().SetId(2, 2)
+    #aHexahedron.GetPointIds().SetId(3, 3)
+    #aHexahedron.GetPointIds().SetId(4, 4)
+    #aHexahedron.GetPointIds().SetId(5, 5)
+    #aHexahedron.GetPointIds().SetId(6, 6)
+    #aHexahedron.GetPointIds().SetId(7, 7)
+    #aHexahedronGrid = vtk.vtkUnstructuredGrid()
+    #aHexahedronGrid.Allocate(1, 1)
+    #aHexahedronGrid.InsertNextCell(aHexahedron.GetCellType(),
+                                   #aHexahedron.GetPointIds())
     
     
     
-    #self.solHost = self.solHost.reshape(self.datashape)
-    #self.solHost = self.solHost.swapaxes(-2, -3)
-    #self.solHost = self.solHost.reshape(self.ioshape[:-1] + (-1,))
-    #self.solHost = self.solHost[..., :self.ioshape[-1]]
+    
+    #aHexahedronGrid.SetPoints(pts)
+    #aHexahedronGrid.SetCells(VTK_HEXAHEDRON, cellArray);
+    #aHexahedronGrid.GetPointData()->AddArray(relevance);
+    #aHexahedronGrid.GetPointData()->AddArray(qCrit);
+  
+    #aHexahedronMapper = vtk.vtkDataSetMapper()
+    #aHexahedronMapper.SetInputData(aHexahedronGrid)
+    #aHexahedronActor = vtk.vtkActor()
+    #aHexahedronActor.SetMapper(aHexahedronMapper)
+    #aHexahedronActor.AddPosition(2, 0, 0)
+    #aHexahedronActor.GetProperty().SetDiffuseColor(1, 1, 0)
+    
+    #fn = 'test_PolyVertexCloud.vtu'
+    #writer = vtk.vtkUnstructuredGridWriter()
+    #writer.SetFileName(fn)
+    #writer.SetInputData(aHexahedronGrid)
+    #writer.Write()
+    
+    
+    
+    #print("Verts 0-17:")
+    #for ivert in range(0,17):
+      #print("  " + repr(self.vertices[3*ivert]) + "  " + repr(self.vertices[3*ivert+1]) + "  " + repr(self.vertices[3*ivert+2]))
+    
+    #print("\nVerts 4096-4113:")
+    #for ivert in range(4096,4113):
+      #print("  " + repr(self.vertices[3*ivert]) + "  " + repr(self.vertices[3*ivert+1]) + "  " + repr(self.vertices[3*ivert+2]))
+    
+    #print("\nVerts 8192-8209:")
+    #for ivert in range(8192,8209):
+      #print("  " + repr(self.vertices[3*ivert]) + "  " + repr(self.vertices[3*ivert+1]) + "  " + repr(self.vertices[3*ivert+2]))
+    
+    #print("\nVerts 12288-12305:")
+    #for ivert in range(12288,12305):
+      #print("  " + repr(self.vertices[3*ivert]) + "  " + repr(self.vertices[3*ivert+1]) + "  " + repr(self.vertices[3*ivert+2]))
+      
+    #print("\nVerts 36864-36881:")
+    #for ivert in range(36864,36881):
+      #print("  " + repr(self.vertices[3*ivert]) + "  " + repr(self.vertices[3*ivert+1]) + "  " + repr(self.vertices[3*ivert+2]))
+      
     
     # convert conservative to primitive
     
