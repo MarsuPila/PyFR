@@ -253,4 +253,4 @@ class VisPlugin(BasePlugin):
         self._lib.vis_run(self._vptr, intg.tcurr, intg.nacptsteps)
         
         #from pyfr.plugins.toDiskandVTU import vtuComp
-        self.vtuOut.storeVTU(intg.tcurr, intg.nacptsteps)
+        self.vtuOut.storeVTU(intg.tcurr, intg.nacptsteps, self.cfg)

@@ -6,10 +6,6 @@ import numpy as np
 import pycuda.driver as cuda
 import vtk
 
-#from pyfr.ctypesutil import load_librself.solHost
-#from pyfr.plugins.base import BasePlugin
-#from pyfr.shapes import BaseShape
-#from pyfr.util import proxylist, subclass_where
 
 class MeshInfo(Structure):
     _fields_ = [
@@ -49,6 +45,9 @@ class vtuComp():
     return
   
   def storeMesh(self, nEleTypes, minfo, sinfo, cfg):
+    if (cfg.get('soln-plugin-vis', 'writeOrigVTU', 'false') == 'false'):
+      return
+    
     if (nEleTypes > 1):
       print("CAUTION: write vtu only works for hexes so far")
       return
@@ -78,8 +77,11 @@ class vtuComp():
     return
     
   
-  def storeVTU(self, time, nacptsteps):
+  def storeVTU(self, time, nacptsteps, cfg):
     if (nacptsteps > 1):
+      return
+    
+    if (cfg.get('soln-plugin-vis', 'writeOrigVTU', 'false') == 'false'):
       return
     
     # bring host buffer in initial shape
@@ -119,7 +121,8 @@ class vtuComp():
       #if (not np.isclose(self.solHost[0][ivert], rhotest, 1.E-5, 1.E-5)):
         #print("Noooo! " + repr(ivert) + "   rho: "+ repr(self.solHost[0][ivert]) + "  rhotest: " + repr(rhotest))
     
-    # prepare data for vtk
+    
+    # prepare data for vtk output
     
     pts = vtk.vtkPoints()
     pts.SetNumberOfPoints(self.neles*self.nnodesperele)
@@ -143,14 +146,16 @@ class vtuComp():
       prs.SetTuple1(ivert, self.solHost[4, ivert])
   
     
-    # build cells
+    
+# build cells
     aHexahedron     = vtk.vtkHexahedron()
     aHexahedronGrid = vtk.vtkUnstructuredGrid()
     aHexahedronGrid.Allocate(1, 1)
     for icell in range(self.ncells):
       for ivert in range(8):
         aHexahedron.GetPointIds().SetId(ivert, self.con[8*icell+ivert])
-      aHexahedronGrid.InsertNextCell(aHexahedron.GetCellType(), aHexahedron.GetPointIds())
+      aHexahedronGrid.InsertNextCell(aHexahedron.GetCellType(),
+ aHexahedron.GetPointIds())
     
     # setpoints'n'pointdata
     aHexahedronGrid.SetPoints(pts)
@@ -160,48 +165,10 @@ class vtuComp():
     
     # write out file
     fn = 'aaaaaaaaa.vtu'
-    #writer = vtk.vtkUnstructuredGridWriter()
     writer = vtk.vtkXMLUnstructuredGridWriter()
     writer.SetFileName(fn)
     writer.SetInputData(aHexahedronGrid)
     writer.Write()
-    
-    
-    #aHexahedron = vtk.vtkHexahedron()
-    #aHexahedron.GetPointIds().SetId(0, 0)
-    #aHexahedron.GetPointIds().SetId(1, 1)
-    #aHexahedron.GetPointIds().SetId(2, 2)
-    #aHexahedron.GetPointIds().SetId(3, 3)
-    #aHexahedron.GetPointIds().SetId(4, 4)
-    #aHexahedron.GetPointIds().SetId(5, 5)
-    #aHexahedron.GetPointIds().SetId(6, 6)
-    #aHexahedron.GetPointIds().SetId(7, 7)
-    #aHexahedronGrid = vtk.vtkUnstructuredGrid()
-    #aHexahedronGrid.Allocate(1, 1)
-    #aHexahedronGrid.InsertNextCell(aHexahedron.GetCellType(),
-                                   #aHexahedron.GetPointIds())
-    
-    
-    
-    
-    #aHexahedronGrid.SetPoints(pts)
-    #aHexahedronGrid.SetCells(VTK_HEXAHEDRON, cellArray);
-    #aHexahedronGrid.GetPointData()->AddArray(relevance);
-    #aHexahedronGrid.GetPointData()->AddArray(qCrit);
-  
-    #aHexahedronMapper = vtk.vtkDataSetMapper()
-    #aHexahedronMapper.SetInputData(aHexahedronGrid)
-    #aHexahedronActor = vtk.vtkActor()
-    #aHexahedronActor.SetMapper(aHexahedronMapper)
-    #aHexahedronActor.AddPosition(2, 0, 0)
-    #aHexahedronActor.GetProperty().SetDiffuseColor(1, 1, 0)
-    
-    #fn = 'test_PolyVertexCloud.vtu'
-    #writer = vtk.vtkUnstructuredGridWriter()
-    #writer.SetFileName(fn)
-    #writer.SetInputData(aHexahedronGrid)
-    #writer.Write()
-    
     
     
     #print("Verts 0-17:")
