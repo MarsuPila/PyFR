@@ -176,7 +176,7 @@ class VisPlugin(BasePlugin):
 
         # Prepare vtu cell arrays
         vtu_con = np.tile(nodes, (neles, 1))
-        vtu_con += (np.arange(neles)*nsvpts)[:, None]
+        vtu_con = neles*vtu_con + (np.arange(neles))[:, None]
         vtu_con = vtu_con.astype(np.int32)
 
         # Generate offset into the connectivity array
